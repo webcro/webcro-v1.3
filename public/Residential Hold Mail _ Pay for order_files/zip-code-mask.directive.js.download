@@ -1,0 +1,23 @@
+angular
+    .module('paymentApp')
+    .directive('zipCodeMask', zipCodeMask);
+
+function zipCodeMask() {
+    var directive = {
+        link: link,
+        require: '?ngModel',
+        restrict: 'A'
+    };
+    return directive;
+
+    function link(scope, element, attrs, ctrl) {
+        if (!ctrl) return;
+
+        ctrl.$parsers.unshift(function (viewValue) {
+            if(viewValue.length > 5 && viewValue.indexOf("-") < 0) {
+                return element.val(viewValue.substr(0,5) + "-" + viewValue.substr(5));
+            }
+            return viewValue;
+        });
+    }
+}

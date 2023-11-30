@@ -1,0 +1,85 @@
+angular
+    .module('paymentApp')
+    .directive('ngAddressComplete', ngAddressComplete);
+
+function ngAddressComplete() {
+    var directive = {
+        link: link,
+        require: '?ngModel',
+        restrict: 'A'
+    };
+    return directive;
+
+    function link(scope, element, attrs, ctrl) {
+        if (!ctrl) return;
+
+        var fields = [{ element: "addressComplete", field: "{AddressLabel}", mode: 5 }],
+        options = {
+            key: "RD76-YM95-MM19-YT45",
+            countries: { codesList: "CAN" },
+            bar: { visible: false },
+            culture: "en",
+            prompt: true,
+            search: { maxSuggestions: 7, maxResults: 100 },
+            setCursor: true, //Updates the input field with the current search text... Needed for Units
+            manualEntry: true,
+            advancedFields: ["{DeliveryMode}", //Field1Format
+                "{SubBuilding}", //Field2Format
+                "{StreetNumber}", //Field3Format
+                "{StreetNumberSuffix}", //Field4Format
+                "{StreetName}", //Field5Format
+                "{StreetType}", //Field6Format
+                "{StreetDirection}", //Field7Format
+                "{City}", //Field8Format
+                "{ProvinceCode}", //Field9Format
+                "{PostalCode}", //Field10Format
+                "{DeliveryType}", //Field11Format
+                "{DeliveryNumber}", //Field12Format
+                "{DeliveryMode}", //Field13Format
+                "{StationType}", //Field14Format
+                "{StationName}", //Field15Format
+                "{CountryIso2}", //Field16Format
+                "{StreetPreDirection}", //Field17Format
+                "{StreetPostDirection}", //Field18Format
+                "{Type}", //Field19Format
+                "" //Field20Format
+            ],
+            countries: {
+                defaultCode: 'CAN',
+                fallbackCode: 'CAN'
+            },
+            bar: {
+                visible: true,
+                showCountry: false,
+                showLogo: true,
+                logoLink: true
+            }
+        };
+
+        var control = new pca.Address(fields, options);
+
+ 		addressComplete.listen("options", function (options) {
+			options.search = {
+				maxSuggestions: 5, //the number of initial search results to return
+				maxResults: 100  //the maximum number of clickable addresses to return
+			}
+			options.minItems = 1; //the minimum size of the list
+			options.maxItems = 100; //the maximum size of the list
+		});
+
+        control.listen("populate", function (address) {
+
+            var label, country;
+ 			label = address.Label;
+            country = address.CountryIso3;
+ 
+            element.val(label.replace(/(\r\n|\n\n|\n|\r)/gm, ' '));
+
+            document.getElementById('addressCompleteWindow').innerHTML = label.replace(/(\r\n|\n\n|\n|\r)/gm, '<br />');
+            scope.vm.newAddressLine1 = address.Line1;
+            scope.vm.newCity = address.City;
+            scope.vm.region = scope.vm.getRegion(address.ProvinceCode);
+            scope.vm.newPostalCode = address.PostalCode;
+         });
+    }
+}

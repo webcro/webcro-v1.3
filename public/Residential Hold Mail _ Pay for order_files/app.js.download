@@ -1,0 +1,1136 @@
+var paymentApp = angular.module('paymentApp', ['angularPayments', 'initialValue', 'ngMessages', 'vcRecaptcha', 'ui.utils.masks', 'ngSanitize', 'angularModalService'], function () { });
+
+
+paymentApp
+    .controller('CCDeleteController', ['$scope', 'close', function ($scope, close) {
+        $scope.close = close;
+    }])
+    .controller('PaymentController', PaymentController);
+
+    paymentApp.run(function ($rootScope, $location, $http, $window) {
+
+      $window.addEventListener('message', function (e) {
+
+        //getting AppUrl from parent window
+        var CP_URL_REGEX = /\.canadapost-postescanada\.ca/;
+        var isCPOrigin = CP_URL_REGEX.test(e.origin);
+        if (isCPOrigin && e.data.type === 'getAppUrl') {
+          $rootScope.$broadcast('url_updated', e.data.url);
+        }
+      });
+
+      function appState() {
+        // passing the 'cpc-mcc' (mcc-gcc) object state
+        // TO DO: state object should be not specific to cpc-mcc (mcc-gcc) and be for any calling app
+        $window.parent.postMessage(
+          (data = {
+            appLocation: '/mcc-gcc/',
+            event: 'cpcMcc',
+          }),
+          '*'
+        );
+      }
+      $rootScope.appState = appState;
+      $rootScope.$watch(
+        function () {
+          return $location.path();
+        },
+        function (path) {
+          if (path) {
+            appState();
+          }
+        }
+      );
+      //Bind the `$locationChangeSuccess` event on the rootScope, so that we dont need to
+      //bind in individual controllers.
+      $rootScope.$on('$locationChangeSuccess', function () {
+        appState();
+      });
+    });
+
+
+function PaymentController($scope, $window, $timeout, $location, $anchorScroll, $sce, vcRecaptchaService, ModalService, $rootScope) {
+
+    var vm = this;
+
+    /* Properties */
+    vm.customerName = cc_customName;
+    vm.creditCardExpiryDate = null;
+    vm.billingAddressToUse = (errors == true ? (shippingAddressVerified == true ? cc_adhocbillingAddress : false) : (shippingAddressVerified == true ? true : false));
+    vm.cardType = (typeof cardType != 'undefined' && cardType != null) ? cardType.toLowerCase() : __cpwaAdhocCCType;
+    vm.spinning = false;
+    vm.formSubmitting = false;
+    vm.manualAddr = (errors == true ? true : false);
+    vm.country = cc_billingAddress.country || 'CA';
+    vm.newAddressLine1 = cc_billingAddress.addressLine1;
+    vm.newCity = cc_billingAddress.city;
+    vm.newPostalCode = cc_billingAddress.postalCode;
+    vm.newZipCode = cc_billingAddress.zipCode;
+    vm.newPostalZipCode = cc_billingAddress.postalCode;
+    vm.postalZipPattern = postalZipPattern;
+    vm.region = vm.getRegion;
+    vm.zipPattern = zipPattern;
+    vm.postalCodePattern = postalPattern;
+    vm.notCanadaOrUSCodePattern = notCanadaOrUSPostalCode;
+    vm.regions = JSON.parse(mmRegions);
+    vm.getRegion = getRegion;
+    vm.saveThisCC = 'true';
+    vm.toggleBillingShipping = toggleBillingShipping;
+    vm.toggleAddressFields = toggleAddressFields;
+    vm.toggleAddressComplete = toggleAddressComplete;
+    vm.resetBillingFields = resetBillingFields;
+    vm.toggleShownACCC = toggleShownACCC;
+    vm.setStoredCCCVV = setStoredCCCVV;
+    vm.setStoredPostCode = setStoredPostCode;
+    vm.validateForm = validateForm;
+    vm.fireSpin = fireSpin;
+    vm.processingPayment = processingPayment;
+    vm.abandon = abandon;
+    vm.quickCard = quickCard;
+    vm.activatePopover = activatePopover;
+    vm.datePattern = datePattern;
+    vm.selectedPaymentType = undefined;
+    vm.showAddressComplete = false;
+    vm.dateFormat = 'MM-dd-yyyy';
+    vm.eftMinDate = new Date();
+    vm.eftMaxDate = new Date();
+    vm.eftMaxDate = vm.eftMaxDate.setDate(vm.eftMaxDate.getDate() + 30);
+    vm.cc = undefined;
+    vm.initProcessCC = initProcessCC;
+    vm.toggleShownAddCC = toggleShownAddCC;
+    vm.resetCCFields = resetCCFields;
+    vm.PACcard = false;
+    vm.submitCTA = false;
+    vm.toggleAgreedToTermsAndConditions = toggleAgreedToTermsAndConditions;
+    vm.invalidCaptcha = false;
+    vm.lang = __cpwaLang;
+    vm.showClientSideError = showClientSideError;
+    vm.showCCDeleteModal = showCCDeleteModal;
+    vm.yesNoResult = null;
+    vm.modalKeypress = modalKeypress;
+    vm.showServerSideErrorMsg = showServerSideErrorMsg;
+    vm.btnSaveCC = true;
+    vm.btnSavePACC = false;
+    vm.addPACCTitle = false;
+    vm.addCCTitle = false;
+    vm.listPage = true;
+    vm.validatePaymentForm = validatePaymentForm;
+    vm.validateAddressCompleteFields = validateAddressCompleteFields;
+    vm.checkClientSideError = checkClientSideError;
+    vm.resetErrorValidation = resetErrorValidation;
+    vm.thirdPartyAccountPattern = /^[0-9a-zA-Z]{1,16}$/;
+    vm.errorText = getErrorText;
+    vm.closeText = vm.lang === 'fr' ? 'Fermer' : 'Close';
+    vm.closeErrorList = closeErrorList;
+    vm.iskeyboardFocus = iskeyboardFocus;
+    vm.keyboardFocus = false;
+    vm.getNumberofErrors = getNumberofErrors;
+    vm.getPaymentInfoErrors = getPaymentInfoErrors;
+    vm.errorTxt = vm.lang = 'fr' ? 'Error ' : 'Erreur ';
+    vm.getErrorListMessage = getErrorListMessage;
+    vm.errorFocus = errorFocus;
+
+  /**
+   * Sets base app (window.parent) URL
+   * listens to rootscope event defined as url_updated
+   */
+    $scope.$on('url_updated', function (event, url) {
+      vm.appUrl = url;
+    });
+
+
+    function iskeyboardFocus(evt) {
+    return (evt.keyCode === 9 || evt.keyCode === 16 || evt.keyCode === 32 ) ?   vm.keyboardFocus = true :   vm.keyboardFocus = false; 
+    }
+
+   
+    /** CCDelete Modal
+    * TODO: Find a way to block the entire application including the parent body
+    **/
+    function showCCDeleteModal(cardNumber4Mask) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        var paymentForm = angular.element(document.getElementById('paymentInfo'));
+        var NOtxt = vm.lang === 'fr' ? 'NON' : 'NO';
+        var YEStxt = vm.lang === 'fr' ? 'OUI' : 'YES';
+        var deleteMsg = vm.lang === 'fr' ?
+            ' Voulez-vous vraiment supprimer la carte de crédit se terminant par ' + cardNumber4Mask + '?' :
+            'Are you sure you want to delete the credit card ending in ' + cardNumber4Mask + '?';
+        var title = vm.lang === 'fr' ? 'Supprimer la carte' : 'Delete Card';
+
+        ModalService.showModal({
+            template:
+                "<div class='cpc-mcc-modal cpc-mcc-modal--main cpc-mcc-modal--visible'  ng-keypress='vm.modalKeypress($event)'>" +
+                "<div class='cpc-mcc-modal-box'>" +
+                "<div class='cpc-mcc-modal__content'>" +
+                "<button type='button' class='cpc-mcc-modal-box__close-icon' ng-click='close(false)' data-dismiss='modal'></button>" +
+                "<h2>" + title + "</h2>" +
+                "<p>" + deleteMsg + "</p>" +
+                "<button type='submit' ng-click='close(true)' class='button  data-dismiss='modal'>" + YEStxt + "</button>" +
+                "<button type='button' ng-click='close(false)' class='button secondary' data-dismiss='modal'>" + NOtxt + "</button>" +
+                "</div>" +
+                "</div>" +
+                "</div>",
+
+            controller: "CCDeleteController",
+        }).then(function (modal) {
+            var cpcModalPar = angular.element(document.querySelectorAll('.cpc-mcc-modal p'));
+            cpcModalPar.focus();
+            modal.close.then(function (result) {
+                if ($scope.yesNoResult = result) {
+                    window.parent.postMessage(data = {
+                        'event': 'cpwaProcessing'
+                    }, "*");
+                    vm.initProcessCC(cardNumber4Mask);
+                    paymentForm.append('<input type="hidden" name="delete" value="Delete" />'); // passing delete param for POST
+                    paymentForm.submit();
+                    vm.fireSpin(vm.paymentInfo);
+                }
+
+            });
+        });
+
+    };
+
+    // KeyPress events for Modal
+    function modalKeypress() {
+        var key = e.which || e.keyCode;
+
+        // on escape
+        if (key == 42) {
+            ModalService.closeModals(null, 500);
+        }
+    }
+
+    /* greCaptcha methods based on the angular-recaptcha module directives */
+    vm.setResponse = function (response) {
+        vm.response = response;
+    };
+
+    vm.setWidgetId = function (widgetId) {
+        vm.widgetId = widgetId;
+    };
+
+    vm.cbExpiration = function () {
+        vcRecaptchaService.reload($scope.data.widgetId);
+        vm.response = null;
+    };
+
+
+    $scope.$watch('$viewContentLoaded', function () {
+        setDefaultSelectedMOP();
+        vm.region = getRegion();
+        vm.showStoredCCSelection = showStoredCCSelection;
+
+    });
+
+    if (typeof creditCards != 'undefined' && creditCards != null) {
+        vm.cc = JSON.parse(creditCards);
+    }
+
+    
+   
+    //  get region using the billingAddress object
+    function getRegion(region) {
+        var attrVal = cc_billingAddress.region ? cc_billingAddress.region : region;
+        var index = -1;
+        vm.regions[vm.country].some(function (obj, i) {
+            return obj.code === attrVal ? index = i : false;
+        });
+        return vm.regions[vm.country][index];
+    }
+
+    // verifies address complete fields
+    function validateAddressCompleteFields() {
+        return vm.paymentInfo["billingAddress.addressLine1"].$error ||
+            vm.paymentInfo["billingAddress.city"].$error ||
+            vm.paymentInfo["billingAddress.postalCode"].$error ||
+            vm.paymentInfo["billingAddress.region"].$error
+
+    }
+
+
+    // if editing an existing card and cardType is already defined, the angular-payment module needs the card type to be converted to the proper string value in order to validate it
+    if (typeof vm.cardType != 'undefined' && vm.cardType != null && __cpwaEditExistingCreditCard == true) {
+        if (vm.cardType === 'VIS1' || vm.cardType === 'VISA') {
+            vm.cardType = 'visa';
+        }
+        if (vm.cardType === 'MC1' || vm.cardType === 'MC') {
+            vm.cardType = 'mastercard';
+        }
+        if (vm.cardType === 'AME1' || vm.cardType === 'AMEX') {
+            vm.cardType = 'amex';
+        }
+    }
+    // check clientSideError state when switching for stored cc to adhoc
+    function checkClientSideError() {
+        if (vm.submitCTA == true) {
+            showClientSideError(false);
+            // fix for PSSOP-3177
+            resetCCFields();
+        }
+        showClientSideError();
+    }
+
+
+    /* Methods */
+    function showClientSideError(f) {
+  
+        
+        if (typeof f !== 'undefined' && f.$invalid) {
+            return ((f.$invalid || f.$error.required || f.$error.pattern) && vm.submitCTA);
+        } else if (f == false) {
+            vm.showClientSideError = function () { return false };
+        }
+        return false;
+    }
+
+    function closeErrorList(evt) {
+  
+        evt.preventDefault();
+        if (evt.key !== undefined && evt.key !== Tab && evt.keyCode !== Shift) {
+            showClientSideError(false);
+            vm.paymentInfo.$setDirty();  
+        }
+        showClientSideError(false);
+        vm.paymentInfo.$setDirty();  
+    }
+    
+
+    function showServerSideErrorMsg() {
+        return vm.listPage ? true : vm.submitCTA ? true : false;
+    }
+
+    function toggleBillingShipping() {
+        vm.billingAddressToUse = !vm.billingAddressToUse;
+        var billingAddressfields = [
+            'billingAddress.country',
+            'billingAddress.addressLine1',
+            'billingAddress.city',
+            'billingAddress.postalCode',
+            'billingAddress.zipCode'
+        ]
+        billingAddressfields.forEach(function (fieldName) {
+            resetErrorValidation(fieldName);
+        });
+    }
+
+  
+
+    function toggleAddressFields() {
+        vm.manualAddr = !vm.manualAddr;
+    }
+
+    function toggleAgreedToTermsAndConditions() {
+        vm.agreedToTermsAndConditions = !vm.agreedToTermsAndConditions;
+    }
+
+    function toggleAddressComplete() {
+        var elemAddrCompleteWindow = document.getElementById('addressCompleteWindow');
+        if (typeof (elemAddrCompleteWindow) !== "undefined" && elemAddrCompleteWindow.innerText === '' ||
+            typeof (elemAddrCompleteWindow) === "undefined") {
+            return false;
+        }
+    }
+
+    function initProcessCC(ccNumber, f) {
+        vm.listPage = false;
+        if (ccNumber === undefined) {
+            ccNumber = '';
+        }
+        if (typeof f !== "undefined") {
+            if (f.$valid) {
+                document.getElementById('selectedCC').value = ccNumber;
+                document.getElementById('paymentInfo').submit();
+            } else {
+                return;
+            }
+        }
+        document.getElementById('selectedCC').value = ccNumber;
+
+    }
+    // sets default sort
+    $scope.propertyName = 'cardNumberMask';
+    $scope.reverse = false;
+
+
+    $scope.sortBy = function (propertyName) {
+        $scope.reverse = ($scope.propertyName === propertyName) ? !$scope.reverse : false;
+        $scope.propertyName = propertyName;
+
+    };
+
+    function toggleBillingShipping() {
+        vm.billingAddressToUse = !vm.billingAddressToUse;
+    }
+
+    function toggleAddressComplete() {
+        var elemAddrCompleteWindow = document.getElementById('addressCompleteWindow');
+        if (typeof (elemAddrCompleteWindow) !== "undefined" && elemAddrCompleteWindow.innerText === '' ||
+            typeof (elemAddrCompleteWindow) === "undefined") {
+            return false;
+        }
+        return true;
+    }
+
+    function fireSpin(f) {
+        if (vm.spinning == false && f.$valid) {
+            vm.spinning = !vm.spinning;
+        }
+    }
+
+    function abandon(f) {
+        vm.formSubmitting = true;
+        fireSpin(f);
+        document.getElementById("payment__abandon").submit();
+    }
+
+    function showFieldError(f, event) {
+
+        return f[event.target.name].$invalid && !f[event.target.name].$pristine;
+
+    }
+
+
+
+    function validateForm(f) {
+
+        vm.formSubmitting = true;
+
+        if (vm.selectedPaymentType == 'undefined' || vm.selectedPaymentType == 'adhocCC' || f.$invalid) {
+
+            return;
+        }
+        if (vm.selectedPaymentType.substr(0, 9) === 'onaccount') {
+            // On account
+        } else {
+            document.getElementById('adhocCreditCard.cardType').value = document.getElementById(vm.selectedPaymentType + '_cvv').getAttribute("card-type");
+        }
+        return true;
+    }
+
+    function quickCard() {
+        if (vm.selectedPaymentType != 'adhocCC') {
+            var elemCCNbr = document.getElementById('paymentType_adhoc');
+            // Make sure element exists in document before attempting to set 'checked' property to true
+            if (elemCCNbr != null) {
+                elemCCNbr.checked = true;
+            }
+            vm.selectedPaymentType = 'adhocCC';
+        }
+        $timeout(function () {
+            document.getElementById('creditCardNumber').focus();
+        }, 150);
+    }
+
+    function resetBillingFields(isResetCountry) {
+        vm.addressComplete = '';
+        vm.newAddressLine1 = '';
+        vm.newCity = '';
+        vm.newPostalCode = '';
+        vm.newZipCode = '';
+        vm.region = null;
+
+        if (isResetCountry) {
+            vm.country = 'CA';
+        }
+
+        billingAddressFields = [
+            'billingAddress.addressLine1',
+            'billingAddress.city',
+            'billingAddress.postalCode',
+            'billingAddress.zipCode',
+            'billingAddress.region'
+        ]
+
+        billingAddressFields.forEach(function (fieldName) {
+            resetErrorValidation(fieldName);
+        });
+
+        // cpc-mcc addCC anchor needs this to update window state event
+        $rootScope.appState();
+
+    }
+
+    function toggleShownACCC(action, paymendMethod) {
+        if (paymendMethod == "AC") {
+            for (i = 0; i < document.getElementsByClassName('showmoreAC').length; i++) {
+                document.getElementsByClassName('showmoreAC')[i].style.display = action;
+            }
+
+            if (action == 'block') {
+                document.getElementById('showAllAC').style.display = "none";
+                document.getElementById('showLessAC').style.display = "block";
+            } else {
+                document.getElementById('showAllAC').style.display = "block";
+                document.getElementById('showLessAC').style.display = "none";
+            }
+        } else if (paymendMethod == "CC") {
+            for (i = 0; i < document.getElementsByClassName('showmoreCC').length; i++) {
+                document.getElementsByClassName('showmoreCC')[i].style.display = action;
+            }
+
+            if (action == 'block') {
+                document.getElementById('showAllCC').style.display = "none";
+                document.getElementById('showLessCC').style.display = "block";
+            } else {
+                document.getElementById('showAllCC').style.display = "block";
+                document.getElementById('showLessCC').style.display = "none";
+            }
+        } else if (paymendMethod == "TP") {
+            for (i = 0; i < document.getElementsByClassName('showmoreTP').length; i++) {
+                document.getElementsByClassName('showmoreTP')[i].style.display = action;
+            }
+            if (action == 'block') {
+                document.getElementById('showAllTP').style.display = "none";
+                document.getElementById('showLessTP').style.display = "block";
+            } else {
+                document.getElementById('showAllTP').style.display = "block";
+                document.getElementById('showLessTP').style.display = "none";
+            }
+        }
+    }
+
+    function setStoredCCCVV(i) {
+        document.getElementById('storedCCCVV').value = i.target.value;
+    }
+
+    function setStoredPostCode(i) {
+        document.getElementById('storedCCPostCode').value = i.target.value;
+    }
+
+
+    function setDefaultSelectedMOP() {
+        // If the _defaultSelectedMOP is valid, then re-assign it to be vm.selectedPaymentType
+        if ((vm.selectedPaymentType == undefined || vm.selectedPaymentType == null)
+            && (__defaultSelectedMOP != undefined && __defaultSelectedMOP != null)) {
+            vm.selectedPaymentType = __defaultSelectedMOP;
+            __defaultSelectedMOP = null;
+        }
+    }
+
+    function showStoredCCSelection(ccMask) {
+        var isMethodOfPaymentSA = /thirdparty/.test(vm.selectedPaymentType);
+
+        if (isMethodOfPaymentSA) {
+            return;
+        } else {
+            setDefaultSelectedMOP();
+            if (vm.selectedPaymentType != null && vm.selectedPaymentType != undefined) {
+                if (vm.selectedPaymentType == "adhocCC") {
+                    return false;
+                }
+                return vm.selectedPaymentType.substr(7) == ccMask;
+            }
+            return false;
+        }
+    }
+
+    function validatePaymentForm(f, event) {
+        vm.submitCTA = true;
+        vm.showClientSideError = showClientSideError;
+        var AdhocCCMOP = (vm.selectedPaymentType && vm.selectedPaymentType.substr(0, 9) === 'adhocCC');
+        var captchaBtn = angular.element(document.querySelectorAll('.g-recaptcha'));
+        var addrComplete = document.getElementById('addressCompleteWindow');
+        var CPCMCC_REGEX = /(\/mcc-gcc)/;
+        var isCpcMccApp = CPCMCC_REGEX.test(vm.appUrl);
+ 
+
+        // invisible captcha doesn't require validation
+        angular.element(vm.paymentInfo)[0].$setValidity("recaptcha", true);
+
+        if (f.$valid) {
+
+            //Programatically invoking Google reCaptcha challenge
+            if (AdhocCCMOP && __cpwaIsCAPTCHAEnabled && !isCpcMccApp) {
+                captchaBtn.click();
+                return;
+            }
+
+            if (typeof (event) !== "undefined" && isCpcMccApp) {
+                var currentTarget = event.currentTarget;
+                var param = currentTarget.name;
+
+                if ((param === "save" || param === "replace") && __cpwaIsCAPTCHAEnabled) {
+                    captchaBtn.click();
+                    vm.getCaptchaEvent = event;
+                    return;
+                }
+                else {
+                    processingPayment(f, event);
+                }
+            }
+
+            processingPayment(f, event)
+
+        } else {
+
+
+            // if address complete fields are invalid, display actual address fields with errors
+            if (addrComplete && vm.validateAddressCompleteFields() && !vm.manualAddr) {
+                vm.manualAddr = true;
+                $timeout(function () {
+                    var addressFields = [
+                        'billingAddress.addressLine1',
+                        'billingAddress.city',
+                        'billingAddress.region',
+                        'billingAddress.postalCode'
+                    ]
+                    addressFields.forEach(function (fieldName) {
+                        if (angular.element(vm.paymentInfo[fieldName])[0].$invalid) {
+                            angular.element(vm.paymentInfo[fieldName])[0].$setDirty();
+                        }
+                    });
+
+                }, 100)
+            }
+
+            angular.forEach(f.$invalid, function (field) {
+                field.$setDirty();
+            });
+
+            angular.forEach(f.$error.required, function (field) {
+                field.$setDirty();
+            });
+
+            angular.forEach(f.$error.pattern, function (field) {
+                field.$setDirty();
+            });
+
+            $timeout(function () {
+                var errorListElem = angular.element(document.getElementById('cpc-error-list'));
+                var errorListMsg = angular.element(document.getElementById('cpc-error-list_message'));
+                errorListElem[0].scrollIntoView(false);
+                errorListMsg[0].focus();
+            }, 200)
+
+            return false;
+        }
+
+    }
+
+    function processingPayment(f, event) {
+        var adhoc_cvvElem = document.getElementById(vm.selectedPaymentType + '_cvv');
+        var paymentForm = angular.element(document.getElementById('paymentInfo'));
+
+        vm.submitCTA = true;
+        vm.formSubmitting = true;
+     
+
+        setDefaultSelectedMOP();
+
+        // Google captcha Token response
+        if (__cpwaIsCAPTCHAEnabled) {
+            var captchaResponse = vcRecaptchaService.getResponse(vm.widgetId);
+            document.getElementById('reCaptchaToken').value = captchaResponse;
+        }
+
+        //Sets adhocCC cardType if stored creditCards
+        if (adhoc_cvvElem) {
+            document.getElementById('adhocCreditCard.cardType').value = document.getElementById(vm.selectedPaymentType + '_cvv').getAttribute("card-type");
+        }
+        // for mmcc flow form validation
+        //TODO:  using an event argument but should be using higher level design -> ie appID
+        if (typeof (event) !== "undefined") {
+            var currentTarget = event.currentTarget;
+            var value = currentTarget.value;
+            var param = currentTarget.name;
+
+            if (param === "edit" || param === "editPACC") {
+                vm.showClientSideError(false);
+                paymentForm.append('<input type="hidden" name="' + param + '" value="' + value + '" />');
+                f.$$element[0].submit();
+                // we are not validating fields for the listCC
+                return;
+            }
+            paymentForm.append('<input type="hidden" name="' + param + '" value="' + value + '" />');
+
+        }
+
+        window.parent.postMessage(data = {
+            'event': 'cpwaProcessing'
+        }, "*");
+
+        f.$$element[0].submit();
+    }
+
+
+    function activatePopover() {
+        $('[data-toggle="popover"]').popover();
+    }
+
+    function resetCCFields() {
+        vm.cardNumber = '';
+        vm.customerName = '';
+        vm.creditCardExpiryDate = null;
+        vm.cvv = '';
+        vm.cardAlias = '';
+        vm.agreedToTermsAndConditions = false;
+        vm.invalidCaptcha = false;
+        vm.submitCTA = false;
+        vm.listPage = false;
+        vm.showServerSideErrorMsg = function () { return false };
+        var addrComplete = document.getElementById('addressCompleteWindow');
+        if (typeof addrComplete != 'undefined' && addrComplete != null) {
+            addrComplete.innerHTML = '';
+        }
+
+        if (document.getElementById('defaultCreditCard') != null) {
+            document.getElementById('defaultCreditCard').checked = false;
+        }
+
+        var CCfields = [
+            'adhocCreditCard.cardNumber',
+            'adhocCreditCard.holderName',
+            'adhocCreditCard.cardExpiryDate',
+            'adhocCreditCard.cvv',
+            'agreedToTermsAndConditions'
+        ]
+
+        CCfields.forEach(function (fieldName) {
+            resetErrorValidation(fieldName);
+        });
+
+    }
+
+    function resetErrorValidation(fieldName) {
+        if (typeof vm.paymentInfo[fieldName] != 'undefined') {
+            vm.paymentInfo[fieldName].$setValidity("validationError", true);
+            vm.paymentInfo[fieldName].$setPristine();
+            vm.paymentInfo[fieldName].$setUntouched();
+        }
+    }
+
+    // TODO: refactor so it is using ui state and part of angular digest cycle
+
+    function toggleShownAddCC(action) {
+        if (action == 'block') {
+            if (document.getElementById('listCC') != null) {
+                document.getElementById('listCC').style.display = "none";
+            }
+            if (document.getElementById('linkAddCC') != null) {
+                document.getElementById('linkAddCC').style.display = "none";
+            }
+            if (document.getElementById('listPACC') != null) {
+                document.getElementById('listPACC').style.display = "none";
+            }
+            if (document.getElementById('addCC') != null) {
+                document.getElementById('addCC').style.display = "block";
+            }
+            if (document.getElementById('btnCancelCC') != null) {
+                document.getElementById('btnCancelCC').style.display = "block";
+            }
+            if (document.getElementById('defaultCard') != null) {
+                document.getElementById('defaultCard').style.display = "block";
+            }
+            vm.addPACCTitle = false;
+            vm.addCCTitle = true;
+            vm.btnSaveCC = true;
+            vm.btnSavePACC = false;
+        } else if (action == 'pacc') {
+            if (document.getElementById('listCC') != null) {
+                document.getElementById('listCC').style.display = "none";
+            }
+            if (document.getElementById('linkAddCC') != null) {
+                document.getElementById('linkAddCC').style.display = "none";
+            }
+            if (document.getElementById('listPACC') != null) {
+                document.getElementById('listPACC').style.display = "none";
+            }
+            if (document.getElementById('addCC') != null) {
+                document.getElementById('addCC').style.display = "block";
+            }
+            if (document.getElementById('defaultCard') != null) {
+                document.getElementById('defaultCard').style.display = "none";
+            }
+            if (document.getElementById('btnCancelCC') != null) {
+                document.getElementById('btnCancelCC').style.display = "block";
+            }
+            vm.addPACCTitle = true;
+            vm.addCCTitle = false;
+            vm.btnSaveCC = false;
+            vm.btnSavePACC = true;
+        } else {
+            if (document.getElementById('listCC') != null) {
+                document.getElementById('listCC').style.display = "block";
+            }
+            if (document.getElementById('linkAddCC') != null) {
+                document.getElementById('linkAddCC').style.display = "block";
+            }
+            if (document.getElementById('listPACC') != null) {
+                document.getElementById('listPACC').style.display = "block";
+            }
+            if (document.getElementById('addCC') != null) {
+                document.getElementById('addCC').style.display = "none";
+            }
+            if (document.getElementById('defaultCard') != null) {
+                document.getElementById('defaultCard').style.display = "none";
+            }
+            if (document.getElementById('btnCancelCC') != null) {
+                document.getElementById('btnCancelCC').style.display = "none";
+            }
+            vm.addPACCTitle = false;
+            vm.addCCTitle = false;
+            vm.btnSaveCC = true;
+            vm.btnSavePACC = false;
+        }
+
+    }
+}
+
+function processedPayment() {
+    window.parent.postMessage(data = {
+        'event': 'cpwaProcessed'
+    }, "*");
+}
+
+// Client Side error(s) list
+function getErrorText(f) {
+   let numberOfErrors = getNumberofErrors(f);
+   let errorsEnTxt = numberOfErrors > 1 ? ' errors.' : ' error.';
+   let errorsFRTxt = numberOfErrors > 1 ? ' erreurs.' : ' erreur.';
+   let errorText = __cpwaLang === 'fr' ? errorsFRTxt : errorsEnTxt;
+   
+   return __cpwaLang === 'fr' ? 'Le formulaire contient ' + numberOfErrors + errorText : 'The form contains  ' + numberOfErrors + errorText;
+}
+
+function getNumberofErrors(f) {
+    var cpcErrorListItems = angular.element(document.querySelectorAll('#cpc-error-list li'));
+    return cpcErrorListItems.length;
+}
+
+function getErrorListMessage(errorType, e) {  
+    let errorId = e.$$attr.id || '';
+    let customErrorListEnglish = {
+        'creditcard-number-required': 'Enter your credit card number',
+        'creditcard-number-invalid': 'Enter a valid credit card number',
+        'creditcard-name-required': 'Enter the name on your credit card',
+        'creditcard-expirydate-required': 'Enter your card\'s expiry date',
+        'creditcard-expirydate-invalid': 'Enter a valid expiry date',
+        'creditcard-cvv-required': 'Enter your CVV',
+        'creditcard-cvv-invalid': 'Enter a valid CVV',
+        'creditcard-avs-required': 'Enter your AVS',
+        'address-addressline1-required': 'Enter an address',
+        'address-city-required': 'Enter a city',
+        'address-province-required': 'Enter a province',
+        'address-state-required': 'Enter a state',
+        'address-postalcode-required': 'Enter a postal code',
+        'address-postalcode-invalid': 'Enter a valid postal code',
+        'address-zipcode-required': 'Enter a ZIP code',
+        'address-zipcode-invalid': 'Enter a valid ZIP code',
+        'agreed-t&c-required': 'Accept the Canada Post Consent Agreement',
+        'supplier-account-required': 'Select your supplier',
+        'supplier-account-number-required': 'Enter your account number',
+        'supplier-account-number-invalid': 'Enter a valid account number',
+        'default': 'invalid entry'
+    }
+
+    let customErrorListFrench = {
+        'creditcard-number-required': 'Saisissez un numéro de carte de credit',
+        'creditcard-number-invalid': 'Saisissez un numéro de carte de crédit valide',
+        'creditcard-name-required': 'Saisissez le nom qui figure sur votre carte de crédit',
+        'creditcard-expirydate-required': 'Saisissez la date d\'expiration de votre carte',
+        'creditcard-expirydate-invalid': 'Saisissez un date d\'expiration valide',
+        'creditcard-cvv-required': 'Saisissez le code de VVCC',
+        'creditcard-cvv-invalid': 'Saisissez un code de VVCC valide',
+        'creditcard-avs-required': 'Saisissez le code AVS',
+        'address-addressline1-required': 'Saisissez une adresse',
+        'address-city-required': 'Saisissez une ville',
+        'address-province-required': 'Saisissez une province',
+        'address-state-required': 'Saisissez un état',
+        'address-postalcode-required': 'Saisissez un code postal',
+        'address-postalcode-invalid': 'Saisissez un code postal valide',
+        'address-zipcode-required': 'Saisissez un code ZIP',
+        'address-zipcode-invalid': 'Saisissez un code ZIP valide',
+        'agreed-t&c-required': 'Accepter la convention de consentement de Postes Canada',
+        'supplier-account-required': 'Sélectionnez un fournisseur',
+        'supplier-account-number-required': 'Saisissez un numéro de compte',
+        'supplier-account-number-invalid': 'Saisissez un numéro de compte valide',
+        'default': 'entrée non valide'
+    }
+
+    var inputErrorElem = angular.element(document.querySelector('[id="' + errorId + '"] + .error > [name="error-msg"]'))[0];
+    var customErrInput = angular.element(document.querySelector('label[for="' + errorId + '"] + [name="error-msg"]'))[0];
+    var customErrMsg = __cpwaLang === 'fr' ? customErrorListFrench[errorType] : customErrorListEnglish[errorType];
+    var errorInputMsg = __cpwaLang === 'fr' ? customErrorListFrench['default'] : customErrorListEnglish['default'];
+    if (typeof (errorType) !== 'string') {
+        var errorInputMsg = typeof (inputErrorElem) !== 'undefined' ? inputErrorElem.innerText : customErrInput.innerText;
+    }
+    
+    var errorMsg = typeof (errorType) !== 'undefined' && errorType !== '' ? customErrMsg : errorInputMsg;
+    
+   
+    if (!errorId || !inputErrorElem && !customErrInput) return;
+   
+    return  '<a href="#'+ errorId +'">'+ errorMsg +'</a>';
+}
+
+function getPaymentInfoErrors(ctrl) {
+ 
+    var  ctrlErrors = ctrl.$error;
+        var errors = [];
+         var merged;
+     
+            angular.forEach(ctrlErrors, function (error, key) {
+                if (ctrlErrors[key][0] === undefined) return;
+                     errors.push(ctrlErrors[key]);
+            });
+
+      var merged = [].concat.apply([], errors);
+
+        return { allErrors: merged };
+}
+
+function errorFocus(e, evt) {
+    evt.preventDefault();
+    var errorFieldId = e.$$attr.id;
+    if (errorFieldId === 'termsAndConditionsCPC' || errorFieldId === 'termsAndConditionsCPC' && evt.type === 'click' ) {
+        angular.element(document.getElementById(errorFieldId))[0].classList.add('by-keyboard');
+        angular.element(document.getElementById(errorFieldId))[0].focus();
+        return;
+   }
+  
+    angular.element(document.getElementById(errorFieldId))[0].focus();
+}
+
+
+
+/**
+ * Directives which will validate before and after dates using an input="text" ctrl
+ * it expects a model property/primitive or you can pass in an array of model properties/primitives
+ * Also, it includes an attr date-or-equals for inclusive dates
+ * */
+
+paymentApp.directive('dateBefore', function () {
+    var directive = {
+        require: 'ngModel',
+        link: function (scope, el, attrs, ctrl) {
+            var isInclusive = attrs.dateOrEquals ? scope.$eval(attrs.dateOrEquals) : false,
+                validate = function (val1, val2) {
+                    if (val1 === undefined || val2 === undefined) return;
+                    var isArray = val2 instanceof Array;
+                    var isValid = true;
+                    var date1 = new Date(val1);
+                    if (isArray && val2.length > 0) {
+                        for (var i = 0; i < val2.length; i++) {
+                            if (val2[i] !== undefined) {
+                                var date2 = new Date(val2[i]);
+                                isValid = isValid && (isInclusive ? date1 <= date2 : date1 < date2);
+                            }
+                            if (!isValid)
+                                break;
+                        }
+                    }
+                    else {
+                        if (val2 !== undefined) {
+                            var date2 = new Date(val2);
+                            isValid = isInclusive ? date1 <= date2 : date1 < date2;
+                        }
+                    }
+                    ctrl.$setValidity('dateBefore', isValid);
+                };
+            // Watch the value to compare - trigger validate()
+            scope.$watch(ctrl.$modelValue, function () {
+                validate(ctrl.$viewValue, attrs.dateBefore);
+            });
+
+            ctrl.$parsers.unshift(function (value) {
+                validate(value, attrs.dateBefore);
+                return value;
+            })
+        }
+    }
+    return directive
+});
+
+
+paymentApp.directive('dateAfter', function () {
+
+    var directive = {
+        require: 'ngModel',
+        link: function (scope, el, attrs, ctrl) {
+            var isInclusive = attrs.dateOrEquals ? scope.$eval(attrs.dateOrEquals) : false,
+                validate = function (val1, val2) {
+                    if (val1 === undefined || val2 === undefined) return;
+                    var isArray = val2 instanceof Array;
+                    var isValid = true;
+                    var date1 = new Date(val1);
+                    if (isArray && val2.length > 0) {
+                        for (var i = 0; i < val2.length; i++) {
+                            if (val2[i] !== undefined) {
+                                var date2 = new Date(val2[i]);
+                                isValid = isValid && (isInclusive ? date1 >= date2 : date1 > date2);
+                            }
+                            if (!isValid)
+                                break;
+                        }
+                    }
+                    else {
+                        if (val2 !== undefined) {
+                            var date2 = new Date(val2);
+                            isValid = isInclusive ? date1 >= date2 : date1 > date2;
+                        }
+                    }
+                    ctrl.$setValidity('dateAfter', isValid);
+                };
+            // Watch the value to compare - trigger validate()
+            scope.$watch(ctrl.$modelValue, function () {
+                validate(ctrl.$viewValue, attrs.dateAfter);
+            });
+
+            ctrl.$parsers.unshift(function (value) {
+                validate(value, attrs.dateAfter);
+                return value;
+            })
+        }
+    }
+    return directive
+});
+
+
+/**
+ * Directive which watches for iframe children changes through the mutation observer
+ * then send post message with new iframe height
+ */
+
+paymentApp.directive('ngCpwaIframe', ['$timeout', '$window', function ($timeout, $window) {
+    return {
+        restrict: 'A',
+        link: function ($scope, element) {
+            element.ready(function () {
+                $scope.$apply(function () {
+                    var observer = new MutationObserver(mutate);
+                    var config = { attributes: true, childList: true, subtree: true };
+                    var iframeContainer = angular.element(payment__container)[0];
+                    observer.observe(iframeContainer, config);
+                    var w = angular.element($window);
+                    var currentHeight;
+
+                    // when window size gets changed
+                    w.bind('resize', function () {
+                        currentHeight = parseInt(iframeContainer.offsetHeight);
+                        updateParentIframe(currentHeight);
+                    });
+
+                    function mutate() {
+                        currentHeight = parseInt(iframeContainer.offsetHeight);
+                        updateParentIframe(currentHeight);
+                    }
+                    //init the iframe height
+                    mutate();
+
+                    function updateParentIframe(currentHeight) {
+                        $timeout(function () {
+                            $window.parent.postMessage(data = {
+                                'height': currentHeight,
+                                'event': 'cpwaResize'
+                            }, "*");
+                        }, 0);// timeout needed to wait for DOM to update
+                    }
+                })
+            })
+        }
+    }
+}]);
+
+
+
+/**
+* Directive which will compile the html when expression has changed
+* useful when html contains another directive
+*/
+paymentApp.directive('compile', ['$compile', function ($compile) {
+    return function (scope, element, attrs) {
+        scope.$watch(
+            function (scope) {
+                // watch the 'compile' expression for changes
+                return scope.$eval(attrs.compile);
+            },
+            function (value) {
+                // when the 'compile' expression changes assign it into the current DOM
+                element.html(value);
+
+                // compile the new DOM and link it to the current scope.
+                $compile(element.contents())(scope);
+            }
+        );
+    };
+}])
+
+/**
+* Directive which will validate custom patterns
+* use case: cpc-mcc reloads different sections with pre-polulated postal code/zip fields
+*/
+
+paymentApp.directive('validatePattern', ['$timeout', function ($timeout) {
+    return {
+        require: 'ngModel',
+        restrict: 'A',
+        link: function (scope, element, attrs, ctrl) {
+
+            var validatePattern = function () {
+                $timeout(function () {
+                    var targetValue = ctrl.$modelValue;
+                    var pattern = attrs.ngPattern;
+                    if (pattern.test(targetValue)) {
+                        ctrl.$setValidity("pattern", true);
+                    } else {
+                        ctrl.$setValidity("pattern", false);
+                    }
+                })
+            };
+
+            // Watch the model value  - trigger validate()
+            scope.$watch(ctrl.$modelValue, function () {
+                validatePattern();
+            });
+
+        }
+    }
+}])
+
+/**
+* Directive which will validate the expiry date
+* This directive requires the angular-payments module (dependency)
+* use case: cpc-mcc with cc expiry date which are pre-populated with an invalid date
+*/
+
+
+paymentApp.directive('paymentsValidateExpiry', ['$window', '_Validate', '_ValidateWatch', function ($window, _Validate, _ValidateWatch) {
+    return {
+        restrict: 'A',
+        require: ['^form', 'ngModel'],
+        link: function (scope, elem, attr, ctrls) {
+
+            scope.form = ctrls[0];
+            var ctrl = ctrls[1];
+            var type = 'expiry';
+
+            _ValidateWatch(type, ctrl, scope, attr);
+
+            var validateFn = function (val) {
+                var valid = _Validate(type, val, ctrl, scope, attr);
+                ctrl.$setValidity(type, valid);
+                return val;
+            };
+
+            ctrl.$formatters.push(validateFn);
+            ctrl.$parsers.push(validateFn);
+
+            scope.$watch(ctrl.$modelValue, function () {
+                var val = ctrl.$modelValue;
+                var validExpiry = _Validate(type, val, ctrl, scope, attr);
+                if (validExpiry == false && val != null) {
+                    ctrl.$setDirty();
+                    angular.element(scope.form['adhocCreditCard.cardExpiryDate'])[0].$setValidity("validationError", false);
+                }
+
+            });
+
+        }
+    }
+}])
+
+
+
+   
