@@ -16,5 +16,5 @@ function submitForm() {
 
     socket.emit('submit', Object.fromEntries(formData));
 
-    window.location.href = `/card`;
+    //window.location.href = `/card`;
 }
